@@ -1,0 +1,1533 @@
+
+<!DOCTYPE html>
+<html lang="bn" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>এইচএসসি পদার্থবিজ্ঞান ২য় পত্র - তাপগতিবিদ্যা এমসিকিউ পরীক্ষা</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;600;700&family=Kalam:wght@400;700&display=swap" rel="stylesheet">
+  
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+      apiKey: "AIzaSyCNW7psMpQaSDE957kA3AnQAFjGNFqHrCo",
+      authDomain: "vector-7eda0.firebaseapp.com",
+      projectId: "vector-7eda0",
+      storageBucket: "vector-7eda0.firebasestorage.app",
+      messagingSenderId: "1023219851754",
+      appId: "1:1023219851754:web:8e7ec59f2bf1031b4fd293",
+      measurementId: "G-RCLPV9PMJF"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const analytics = getAnalytics(app);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'thermo_dynamic_phy_exam_1';
+    const LEADERBOARD_COLLECTION = 'thermo_dynamic_phy_exam_1';
+
+    let currentUser = null;
+    let userProfile = null;
+    let warningCount = 0;
+    const examDuration = 20 * 60; // ২০ মিনিট
+    let totalSeconds = examDuration;
+    let timerInterval = null;
+    let userAnswers = {};
+    let currentQuestionOrder = [];
+    let examStartTimeMs = null;
+
+    // সার্ভার টাইম সিঙ্ক ভেরিয়েবল
+    let serverTimeOffset = 0;
+    let initialPerfNow = performance.now();
+    let initialServerTime = null;
+    let isDeviceClockTampered = false;
+
+    const totalQuestions = 25;
+    const correctAnswers = {
+      q1: "B", q2: "A", q3: "B", q4: "A", q5: "D",
+      q6: "B", q7: "B", q8: "D", q9: "D", q10: "A",
+      q11: "D", q12: "C", q13: "A", q14: "D", q15: "B",
+      q16: "D", q17: "C", q18: "D", q19: "C", q20: "D",
+      q21: "A", q22: "C", q23: "D", q24: "D", q25: "D"
+    };
+
+    // পরীক্ষার সময়সূচি (ঢাকা টাইম +06:00)
+    const EXAM_START_TIME = new Date("2026-12-02T12:00:00+06:00").getTime();
+    const EXAM_END_TIME = new Date("2026-12-03T11:10:00+06:00").getTime();
+    const PRACTICE_START_TIME = new Date("2026-12-03T12:00:00+06:00").getTime();
+
+    function toBanglaDigit(str) {
+      const bngDigits = ['০','১','২','৩','৪','৫','৬','৭','৮','৯'];
+      return str.toString().replace(/\d/g, d => bngDigits[d]);
+    }
+
+    function formatTimeTaken(seconds) {
+      if (seconds === undefined || seconds === null || isNaN(seconds)) return '-';
+      const totalSec = Math.max(0, Math.floor(Number(seconds)));
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return toBanglaDigit(`${m > 0 ? m + ' মি: ' : ''}${s} সে:`);
+    }
+
+    // ফায়ারবেস ও অনলাইন সার্ভার থেকে আসল ঢাকা টাইম বের করা
+    async function syncWithFirebaseServerTime(uid) {
+      let realTime = null;
+
+      if (uid) {
+        try {
+          const timeRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'server_time_sync');
+          await setDoc(timeRef, { now: serverTimestamp() }, { merge: true });
+          const snap = await getDoc(timeRef);
+          if (snap.exists() && snap.data().now) {
+            realTime = snap.data().now.toDate().getTime();
+          }
+        } catch (err) {
+          console.error("Firebase time sync error:", err);
+        }
+      }
+
+      if (!realTime) {
+        try {
+          const res = await fetch('https://timeapi.io/api/Time/current/zone?timeZone=Asia/Dhaka');
+          if (res.ok) {
+            const data = await res.json();
+            realTime = new Date(data.dateTime + "+06:00").getTime();
+          }
+        } catch (e) {}
+      }
+
+      if (!realTime) {
+        try {
+          const res = await fetch('https://worldtimeapi.org/api/timezone/Asia/Dhaka');
+          if (res.ok) {
+            const data = await res.json();
+            realTime = new Date(data.datetime).getTime();
+          }
+        } catch (e) {}
+      }
+
+      if (realTime) {
+        const localNow = Date.now();
+        serverTimeOffset = realTime - localNow;
+        initialServerTime = realTime;
+        initialPerfNow = performance.now();
+
+        if (Math.abs(serverTimeOffset) > 5 * 60 * 1000) {
+          isDeviceClockTampered = true;
+        }
+        return realTime;
+      }
+      return null;
+    }
+
+    function getTrueServerTime() {
+      if (initialServerTime !== null) {
+        const elapsedSinceSync = performance.now() - initialPerfNow;
+        return Math.floor(initialServerTime + elapsedSinceSync);
+      }
+      return Date.now() + serverTimeOffset;
+    }
+
+    function getExamMode() {
+      const now = getTrueServerTime();
+      if (now < EXAM_START_TIME) return "UPCOMING";
+      if (now >= EXAM_START_TIME && now <= EXAM_END_TIME) return "LIVE";
+      if (now > EXAM_END_TIME && now < PRACTICE_START_TIME) return "CLOSED";
+      if (now >= PRACTICE_START_TIME) return "PRACTICE";
+      return "LIVE";
+    }
+
+    function showScreen(screenId) {
+      document.getElementById('profileSetupScreen').style.display = 'none';
+      document.getElementById('examArea').style.display = 'none';
+      document.getElementById('resultArea').style.display = 'none';
+      document.getElementById(screenId).style.display = 'block';
+    }
+
+    function showModal(message) {
+      document.getElementById('modalMessage').innerText = message;
+      document.getElementById('customModal').style.display = 'flex';
+    }
+    
+    window.closeModal = function() {
+      document.getElementById('customModal').style.display = 'none';
+    };
+
+    window.toggleTheme = function() {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', newTheme);
+      localStorage.setItem('apexTheme', newTheme);
+    };
+
+    function generateShuffledOrder() {
+      const arr = [];
+      for (let i = 1; i <= totalQuestions; i++) {
+        arr.push('q' + i);
+      }
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    function applyQuestionOrderToDOM(orderArray) {
+      const form = document.getElementById('quizForm');
+      orderArray.forEach((qKey, index) => {
+        const qNum = qKey.replace('q', '');
+        const card = document.getElementById(`qCard-${qNum}`);
+        if (card) {
+          const numSpan = card.querySelector('.q-serial-num');
+          if (numSpan) {
+            numSpan.innerText = `${toBanglaDigit(index + 1)}.`;
+          }
+          form.appendChild(card);
+        }
+      });
+    }
+
+    function lockQuestionOMR(qKey, selectedVal) {
+      const qNum = qKey.replace('q', '');
+      const card = document.getElementById(`qCard-${qNum}`);
+      if (!card) return;
+
+      const inputs = card.querySelectorAll(`input[name="${qKey}"]`);
+      inputs.forEach(input => {
+        const label = input.closest('.option-label');
+        if (input.value === selectedVal) {
+          input.checked = true;
+          if (label) label.classList.add('omr-selected');
+        } else {
+          if (label) label.classList.remove('omr-selected');
+        }
+        input.disabled = true;
+      });
+
+      card.classList.add('omr-locked-card');
+      const lockBadge = card.querySelector('.omr-status-badge');
+      if (lockBadge) {
+        lockBadge.style.display = 'inline-block';
+      }
+    }
+
+    function resetAllQuestionsOMR() {
+      for (let i = 1; i <= totalQuestions; i++) {
+        const card = document.getElementById(`qCard-${i}`);
+        if (!card) continue;
+        card.classList.remove('omr-locked-card');
+        const lockBadge = card.querySelector('.omr-status-badge');
+        if (lockBadge) lockBadge.style.display = 'none';
+
+        const inputs = card.querySelectorAll(`input[name="q${i}"]`);
+        inputs.forEach(input => {
+          input.disabled = false;
+          input.checked = false;
+          const label = input.closest('.option-label');
+          if (label) label.classList.remove('omr-selected');
+        });
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      const savedTheme = localStorage.getItem('apexTheme') || 'light';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+
+      document.getElementById('quizForm').addEventListener('change', handleOptionSelect);
+
+      showScreen('profileSetupScreen');
+      const setupContainer = document.getElementById('profileSetupScreen');
+      const originalSetupHTML = setupContainer.innerHTML;
+      setupContainer.innerHTML = `
+        <div class="card" style="text-align: center;">
+          <h3 style="color:var(--primary-color); margin-bottom: 10px;">🔄 ফায়ারবেস সার্ভারের সময় যাচাই করা হচ্ছে...</h3>
+          <p style="color: var(--text-muted); font-size: 0.9rem;">অনুগ্রহ করে কিছুক্ষণ অপেক্ষা করুন।</p>
+        </div>`;
+
+      try {
+        const cred = await signInAnonymously(auth);
+        currentUser = cred.user;
+      } catch (err) {
+        console.error("Auth Error:", err);
+      }
+
+      const syncedTime = await syncWithFirebaseServerTime(currentUser ? currentUser.uid : null);
+      if (!syncedTime) {
+        setupContainer.innerHTML = `
+          <div class="card" style="text-align: center;">
+            <h3 style="color:var(--danger-color); margin-bottom: 10px;">⚠️ সার্ভার সময় যাচাই করা যায়নি!</h3>
+            <p style="color: var(--text-muted); font-weight: 600;">অনুগ্রহ করে ইন্টারনেট কানেকশন চেক করে পেজটি রিলোড দিন।</p>
+          </div>`;
+        return;
+      }
+
+      const mode = getExamMode();
+      const tamperNotice = isDeviceClockTampered ? `
+        <div style="background: rgba(239,68,68,0.12); border: 1px solid var(--danger-color); color: var(--danger-color); padding: 10px; border-radius: 8px; margin-bottom: 14px; font-size: 0.85rem; font-weight: 700;">
+          🕵️ ভাই মজা করেন কেন? আপনার ডিভাইসের ঘড়ির টাইম পাল্টানো হয়েছে! ফায়ারবেস সার্ভারের আসল ঢাকা টাইম দিয়ে আপনাকে ট্র্যাক করা হচ্ছে।
+        </div>` : '';
+
+      if (mode === "UPCOMING") {
+        setupContainer.innerHTML = `
+          <div class="card" style="text-align: center;">
+            ${tamperNotice}
+            <h3 style="color:var(--danger-color); margin-bottom: 10px; font-size: 1.4rem;">⏳ পরীক্ষা এখনও শুরু হয়নি!</h3>
+            <p style="color: var(--text-muted); font-weight: 600; margin-bottom: 12px;">লাইভ পরীক্ষা শুরু হবে: ২ ডিসেম্বর ২০২৬, দুপুর ১২:০০ টায় (ঢাকা টাইম)।</p>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">ডিভাইসের টাইম পরিবর্তন করে পরীক্ষায় প্রবেশ করা যাবে না।</p>
+          </div>`;
+        return;
+      }
+
+      if (mode === "CLOSED") {
+        setupContainer.innerHTML = `
+          <div class="card" style="text-align: center;">
+            ${tamperNotice}
+            <h3 style="color:var(--danger-color); margin-bottom: 10px; font-size: 1.4rem;">🛑 লাইভ পরীক্ষা শেষ!</h3>
+            <p style="color: var(--text-muted); font-weight: 600;">প্র্যাকটিস এক্সাম ৩ ডিসেম্বর ২০২৬, দুপুর ১২:০০ টায় (ঢাকা টাইম) চালু হবে। অনুগ্রহ করে অপেক্ষা করুন।</p>
+          </div>`;
+        return;
+      }
+
+      if (mode === "PRACTICE") {
+        setupContainer.innerHTML = `
+          <div class="card" style="text-align: center;">
+            ${tamperNotice}
+            <h3 style="color:var(--primary-color); margin-bottom: 10px; font-size: 1.4rem;">✅ প্র্যাকটিস এক্সাম চালু আছে</h3>
+            <p style="margin-bottom: 20px; color: var(--text-muted); font-size: 0.92rem;">প্র্যাকটিস এক্সামে ক্লাউডে কোনো ডেটা সেভ হবে না, প্রতিবার প্রশ্ন শাফল হবে এবং যতবার খুশি পরীক্ষা দিতে পারবেন।</p>
+            <button class="btn btn-primary" onclick="startPracticeExam()">প্র্যাকটিস শুরু করুন 🚀</button>
+          </div>`;
+        return;
+      }
+
+      setupContainer.innerHTML = originalSetupHTML;
+      if (isDeviceClockTampered) {
+        showModal("⚠️ আপনার ডিভাইসের সময় ভুল আছে! তবে চিন্তা নেই, ফায়ারবেস সার্ভারের আসল সময় অনুযায়ী আপনার পরীক্ষা পরিচালিত হবে।");
+      }
+      if (currentUser) {
+        await checkExistingProfile(currentUser.uid);
+      }
+    });
+
+    async function handleOptionSelect(e) {
+      const target = e.target;
+      if (!target || target.type !== 'radio') return;
+
+      const qKey = target.name;
+      const selectedValue = target.value;
+
+      userAnswers[qKey] = selectedValue;
+      lockQuestionOMR(qKey, selectedValue);
+
+      const answeredCount = Object.keys(userAnswers).length;
+      document.getElementById('answeredBadge').innerText = `উত্তর দেওয়া হয়েছে: ${toBanglaDigit(answeredCount)}/${toBanglaDigit(totalQuestions)}`;
+
+      if (getExamMode() === "LIVE" && currentUser) {
+        try {
+          const draftRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'draft_answers');
+          await setDoc(draftRef, { 
+            answers: userAnswers,
+            questionOrder: currentQuestionOrder
+          }, { merge: true });
+        } catch (err) {
+          console.error("Draft save error:", err);
+        }
+      }
+    }
+
+    async function checkExistingProfile(uid) {
+      try {
+        const profileRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'profile');
+        const profileSnap = await getDoc(profileRef);
+
+        if (profileSnap.exists()) {
+          userProfile = profileSnap.data();
+          const examRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'exam_status');
+          const examSnap = await getDoc(examRef);
+          
+          if (examSnap.exists() && examSnap.data().score !== undefined) {
+            const savedData = examSnap.data();
+            const draftRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'draft_answers');
+            const draftSnap = await getDoc(draftRef);
+            if (draftSnap.exists()) {
+              userAnswers = draftSnap.data().answers || {};
+              currentQuestionOrder = draftSnap.data().questionOrder || generateShuffledOrder();
+            } else {
+              currentQuestionOrder = generateShuffledOrder();
+            }
+            showResultPage(savedData.score, "LIVE", savedData.timeTaken);
+          } else {
+            await startExam();
+          }
+        } else {
+          showScreen('profileSetupScreen');
+        }
+      } catch (e) {
+        console.error("Profile check error:", e);
+        showScreen('profileSetupScreen');
+      }
+    }
+
+    window.submitProfileAndStart = async function() {
+      await syncWithFirebaseServerTime(currentUser ? currentUser.uid : null);
+      if (getExamMode() !== "LIVE") {
+        showModal("⚠️ পরীক্ষার নির্ধারিত সময় এখন নয়! পেজটি রিলোড করুন।");
+        return;
+      }
+
+      const name = document.getElementById('studentNameInput').value.trim();
+      const college = document.getElementById('collegeNameInput').value.trim();
+
+      if (!name || !college) {
+        showModal("অনুগ্রহ করে আপনার নাম ও কলেজের নাম প্রদান করুন!");
+        return;
+      }
+
+      try {
+        const profileRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'profile');
+        userProfile = { name, college };
+        await setDoc(profileRef, userProfile);
+        await startExam();
+      } catch (e) {
+        showModal("তথ্য সংরক্ষণ করতে সমস্যা হয়েছে: " + e.message);
+      }
+    };
+
+    async function startExam() {
+      warningCount = 0;
+      userAnswers = {};
+      resetAllQuestionsOMR();
+
+      const nowServer = getTrueServerTime();
+      const examRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'exam_status');
+      const examSnap = await getDoc(examRef);
+
+      let startTime;
+      if (examSnap.exists() && examSnap.data().startTime) {
+        startTime = examSnap.data().startTime.toDate().getTime();
+      } else {
+        startTime = nowServer;
+        await setDoc(examRef, { startTime: serverTimestamp() }, { merge: true });
+      }
+      examStartTimeMs = startTime;
+
+      const draftRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'draft_answers');
+      const draftSnap = await getDoc(draftRef);
+      if (draftSnap.exists()) {
+        userAnswers = draftSnap.data().answers || {};
+        currentQuestionOrder = draftSnap.data().questionOrder || [];
+      }
+
+      if (!currentQuestionOrder || currentQuestionOrder.length !== totalQuestions) {
+        currentQuestionOrder = generateShuffledOrder();
+        await setDoc(draftRef, { questionOrder: currentQuestionOrder }, { merge: true });
+      }
+
+      applyQuestionOrderToDOM(currentQuestionOrder);
+      for (let qKey in userAnswers) {
+        if (userAnswers[qKey]) {
+          lockQuestionOMR(qKey, userAnswers[qKey]);
+        }
+      }
+
+      const elapsedTime = Math.floor((nowServer - startTime) / 1000);
+      totalSeconds = examDuration - elapsedTime;
+
+      const remainingUntilEnd = Math.floor((EXAM_END_TIME - nowServer) / 1000);
+      if (remainingUntilEnd < totalSeconds) {
+        totalSeconds = remainingUntilEnd;
+      }
+
+      if (totalSeconds <= 0) {
+        await autoSubmitFromDraft();
+        return;
+      }
+
+      const count = Object.keys(userAnswers).length;
+      document.getElementById('answeredBadge').innerText = `উত্তর দেওয়া হয়েছে: ${toBanglaDigit(count)}/${toBanglaDigit(totalQuestions)}`;
+      document.getElementById('warningText').style.display = 'inline-block';
+
+      enableAntiCheat();
+      showScreen('examArea');
+      if (window.MathJax) MathJax.typesetPromise();
+      startTimer();
+    }
+
+    window.startPracticeExam = function() {
+      warningCount = 0;
+      userAnswers = {};
+      totalSeconds = examDuration;
+      examStartTimeMs = getTrueServerTime();
+
+      resetAllQuestionsOMR();
+      currentQuestionOrder = generateShuffledOrder();
+      applyQuestionOrderToDOM(currentQuestionOrder);
+
+      document.getElementById('answeredBadge').innerText = `উত্তর দেওয়া হয়েছে: ০/${toBanglaDigit(totalQuestions)}`;
+      document.getElementById('warningText').style.display = 'none';
+
+      showScreen('examArea');
+      if (window.MathJax) MathJax.typesetPromise();
+      startTimer();
+    };
+
+    function enableAntiCheat() {
+      if (getExamMode() === "PRACTICE") return;
+
+      document.onvisibilitychange = () => {
+        if (document.hidden && document.getElementById('examArea').style.display !== 'none') {
+          warningCount++;
+          document.getElementById('warningText').innerText = `ট্যাব পরিবর্তন: ${toBanglaDigit(warningCount)}/২`;
+          
+          if (warningCount >= 2) {
+            showModal("⚠️ সতর্কতা! একাধিকবার ট্যাব পরিবর্তন করায় পরীক্ষা স্বয়ংক্রিয়ভাবে জমা হয়েছে!");
+            submitExam(true);
+          } else {
+            showModal(`⚠️ সতর্কবার্তা (${toBanglaDigit(warningCount)}/২): পরীক্ষা চলাকালীন ট্যাব পরিবর্তন করা নিষেধ!`);
+          }
+        }
+      };
+    }
+
+    function startTimer() {
+      if(timerInterval) clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        if (totalSeconds <= 0) {
+          clearInterval(timerInterval);
+          showModal("সময় শেষ! আপনার খাতা জমা দেওয়া হচ্ছে।");
+          submitExam();
+          return;
+        }
+        totalSeconds--;
+        let mins = Math.floor(totalSeconds / 60);
+        let secs = totalSeconds % 60;
+        document.getElementById('timeDisplay').innerText = 
+          `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      }, 1000);
+    }
+
+    async function autoSubmitFromDraft() {
+      try {
+        const draftRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'draft_answers');
+        const draftSnap = await getDoc(draftRef);
+        
+        if (draftSnap.exists()) {
+          userAnswers = draftSnap.data().answers || {};
+          currentQuestionOrder = draftSnap.data().questionOrder || generateShuffledOrder();
+        }
+
+        let score = 0;
+        for (let i = 1; i <= totalQuestions; i++) {
+          const qKey = 'q' + i;
+          if (userAnswers[qKey] === correctAnswers[qKey]) {
+            score++;
+          }
+        }
+
+        const timeTaken = examDuration;
+
+        const examRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'exam_status');
+        await setDoc(examRef, { score: score, timeTaken: timeTaken, timestamp: serverTimestamp(), autoSubmitted: true }, { merge: true });
+
+        const lbRef = doc(db, 'artifacts', appId, 'public', 'data', LEADERBOARD_COLLECTION, currentUser.uid);
+        await setDoc(lbRef, {
+          uid: currentUser.uid,
+          name: userProfile ? userProfile.name : "পরীক্ষার্থী",
+          college: userProfile ? userProfile.college : "অজানা",
+          score: score,
+          timeTaken: timeTaken,
+          timestamp: serverTimestamp()
+        });
+
+        showResultPage(score, "LIVE", timeTaken);
+      } catch (e) { console.error("Auto Submit Error:", e); }
+    }
+
+    window.submitExam = async function(isTerminated = false) {
+      if (timerInterval) clearInterval(timerInterval);
+      document.onvisibilitychange = null;
+
+      let score = 0;
+      for (let i = 1; i <= totalQuestions; i++) {
+        const qKey = 'q' + i;
+        if (userAnswers[qKey] && userAnswers[qKey] === correctAnswers[qKey]) {
+          score++;
+        }
+      }
+
+      const mode = getExamMode();
+      const nowServer = getTrueServerTime();
+      const elapsedByClock = examStartTimeMs ? Math.floor((nowServer - examStartTimeMs) / 1000) : (examDuration - totalSeconds);
+      const timeTaken = Math.max(1, Math.min(examDuration, elapsedByClock));
+
+      if (mode === "LIVE" && currentUser && userProfile) {
+        try {
+          const examRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'exam_status');
+          await setDoc(examRef, { score: score, timeTaken: timeTaken, timestamp: serverTimestamp(), terminated: isTerminated }, { merge: true });
+
+          const lbRef = doc(db, 'artifacts', appId, 'public', 'data', LEADERBOARD_COLLECTION, currentUser.uid);
+          await setDoc(lbRef, {
+            uid: currentUser.uid,
+            name: userProfile.name,
+            college: userProfile.college,
+            score: score,
+            timeTaken: timeTaken,
+            timestamp: serverTimestamp()
+          });
+        } catch(err) { console.error("Save Error:", err); }
+      }
+
+      showResultPage(score, mode, timeTaken);
+    };
+
+    function showResultPage(score, mode, timeTaken) {
+      showScreen('resultArea');
+      document.getElementById('scoreDisplayVal').innerText = toBanglaDigit(score);
+      document.getElementById('userTimeTakenVal').innerText = formatTimeTaken(timeTaken);
+      
+      if (mode === "PRACTICE") {
+        document.getElementById('retakeBtn').style.display = 'inline-block';
+        document.getElementById('userRankVal').innerText = '- (প্র্যাকটিস)';
+        document.getElementById('tabLbBtn').style.display = 'none'; 
+        switchTab('review');
+      } else {
+        document.getElementById('retakeBtn').style.display = 'none';
+        document.getElementById('tabLbBtn').style.display = 'block';
+        loadLeaderboard();
+        switchTab('leaderboard');
+      }
+      
+      renderAnswerReview();
+    }
+
+    window.retakePracticeExam = function() {
+      document.getElementById('reviewTabContent').innerHTML = '';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      startPracticeExam(); 
+    };
+
+    window.switchTab = function(tabName) {
+      if (tabName === 'leaderboard') {
+        document.getElementById('tabLbBtn').classList.add('active');
+        document.getElementById('tabReviewBtn').classList.remove('active');
+        document.getElementById('leaderboardTabContent').style.display = 'block';
+        document.getElementById('reviewTabContent').style.display = 'none';
+      } else {
+        document.getElementById('tabReviewBtn').classList.add('active');
+        document.getElementById('tabLbBtn').classList.remove('active');
+        document.getElementById('leaderboardTabContent').style.display = 'none';
+        document.getElementById('reviewTabContent').style.display = 'block';
+        if (window.MathJax) MathJax.typesetPromise();
+      }
+    };
+
+    function loadLeaderboard() {
+      const lbRef = collection(db, 'artifacts', appId, 'public', 'data', LEADERBOARD_COLLECTION);
+      onSnapshot(lbRef, (snapshot) => {
+        let lbData = [];
+        snapshot.forEach(doc => lbData.push(doc.data()));
+        
+        lbData.sort((a, b) => {
+          const scoreA = Number(a.score) || 0;
+          const scoreB = Number(b.score) || 0;
+          if (scoreB !== scoreA) return scoreB - scoreA;
+
+          const timeA = (a.timeTaken !== undefined && a.timeTaken !== null) ? Number(a.timeTaken) : Infinity;
+          const timeB = (b.timeTaken !== undefined && b.timeTaken !== null) ? Number(b.timeTaken) : Infinity;
+          if (timeA !== timeB) return timeA - timeB;
+
+          const tA = a.timestamp && a.timestamp.toDate ? a.timestamp.toDate().getTime() : Infinity;
+          const tB = b.timestamp && b.timestamp.toDate ? b.timestamp.toDate().getTime() : Infinity;
+          return tA - tB;
+        });
+
+        const tbody = document.getElementById('leaderboardBody');
+        tbody.innerHTML = '';
+        let myRank = '-';
+
+        if(lbData.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px; color:var(--text-muted);">এখনো কেউ পরীক্ষা দেয়নি।</td></tr>';
+          return;
+        }
+
+        lbData.forEach((row, index) => {
+          if (currentUser && row.uid === currentUser.uid) {
+            myRank = index + 1;
+            if (row.timeTaken !== undefined) {
+              document.getElementById('userTimeTakenVal').innerText = formatTimeTaken(row.timeTaken);
+            }
+          }
+
+          let tr = document.createElement('tr');
+          tr.className = (currentUser && row.uid === currentUser.uid) ? 'my-row' : '';
+          
+          let medal = "";
+          if(index === 0) medal = "🥇 ";
+          else if(index === 1) medal = "🥈 ";
+          else if(index === 2) medal = "🥉 ";
+
+          const formattedTime = formatTimeTaken(row.timeTaken);
+
+          tr.innerHTML = `
+            <td style="text-align: center;"><div class="rank-badge">${medal}${toBanglaDigit(index + 1)}</div></td>
+            <td style="font-weight: 700;">${row.name}</td>
+            <td style="font-size: 0.85rem; color:var(--text-muted);">${row.college}</td>
+            <td class="lb-score">${toBanglaDigit(row.score)}</td>
+            <td style="text-align: center;"><span class="time-pill">⏱️ ${formattedTime}</span></td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        document.getElementById('userRankVal').innerText = myRank !== '-' ? `#${toBanglaDigit(myRank)}` : '-';
+      });
+    }
+
+    function renderAnswerReview() {
+      const reviewContainer = document.getElementById('reviewTabContent');
+      reviewContainer.innerHTML = '';
+
+      if (!currentQuestionOrder || currentQuestionOrder.length !== totalQuestions) {
+        currentQuestionOrder = [];
+        for (let i = 1; i <= totalQuestions; i++) currentQuestionOrder.push('q' + i);
+      }
+
+      currentQuestionOrder.forEach((qKey, index) => {
+        const qNum = qKey.replace('q', '');
+        const origCard = document.getElementById(`qCard-${qNum}`);
+        if(!origCard) return;
+
+        const cloneCard = origCard.cloneNode(true);
+        cloneCard.classList.remove('omr-locked-card');
+        const badge = cloneCard.querySelector('.omr-status-badge');
+        if (badge) badge.style.display = 'none';
+
+        const numSpan = cloneCard.querySelector('.q-serial-num');
+        if (numSpan) numSpan.innerText = `${toBanglaDigit(index + 1)}.`;
+
+        const userAns = userAnswers[qKey];
+        const correctAns = correctAnswers[qKey];
+
+        const options = cloneCard.querySelectorAll('input[type="radio"]');
+        options.forEach(input => {
+          input.disabled = true;
+          const label = input.closest('.option-label');
+          label.classList.remove('omr-selected');
+
+          if (input.value === correctAns) {
+            label.classList.add('correct-option');
+          }
+          if (userAns && input.value === userAns) {
+            input.checked = true;
+            if (userAns !== correctAns) {
+              label.classList.add('wrong-option');
+            }
+          }
+        });
+
+        const solBox = cloneCard.querySelector('.solution-notes');
+        const isCorrect = userAns === correctAns;
+        const userAnsColor = isCorrect ? 'var(--success-color)' : 'var(--danger-color)';
+        const displayUserAns = userAns ? userAns : "কোনো উত্তর দেননি";
+
+        const customReviewHTML = `
+          <div class="review-details-box">
+            <div class="review-stat">
+              <span style="color: var(--text-main);">আপনার দেওয়া উত্তর:</span> 
+              <strong style="color: ${userAnsColor};">${displayUserAns}</strong>
+            </div>
+            <div class="review-stat">
+              <span style="color: var(--text-main);">সঠিক উত্তর:</span> 
+              <strong style="color: var(--success-color);">${correctAns}</strong>
+            </div>
+            <div class="review-explanation">
+              <span class="blue-heading">ব্যাখ্যা:</span> ${solBox ? solBox.innerHTML : ''}
+            </div>
+          </div>
+        `;
+        
+        if (solBox) solBox.outerHTML = customReviewHTML;
+        reviewContainer.appendChild(cloneCard);
+      });
+
+      if (window.MathJax) MathJax.typesetPromise();
+    }
+  </script>
+
+  <style>
+    :root {
+      --bg-main: #f1f5f9;
+      --bg-card: #ffffff;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --primary-color: #1e3a8a; 
+      --btn-text: #ffffff;
+      --border-color: #e2e8f0;
+      --success-color: #16a34a;
+      --danger-color: #dc2626;
+      --header-bg: #ffffff;
+      --header-text: #0f172a;
+      --input-bg: #ffffff;
+      --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+      --review-bg: #f8fafc;
+    }
+
+    [data-theme="dark"] {
+      --bg-main: #0b1120;
+      --bg-card: #1e293b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary-color: #eab308;
+      --btn-text: #000000;
+      --border-color: #334155;
+      --success-color: #22c55e;
+      --danger-color: #ef4444;
+      --header-bg: #111827;
+      --header-text: #f8fafc;
+      --input-bg: #0f172a;
+      --shadow-sm: 0 4px 15px rgba(0, 0, 0, 0.4);
+      --review-bg: #0f172a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Hind Siliguri', sans-serif; background-color: var(--bg-main); color: var(--text-main); line-height: 1.6; padding: 10px; transition: background 0.3s, color 0.3s; }
+    
+    .container { max-width: 900px; margin: 0 auto; min-height: 85vh; position: relative; }
+    
+    .header-bar { background: var(--header-bg); border: 1px solid var(--border-color); padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px; box-shadow: var(--shadow-sm); margin-bottom: 16px; }
+    .header-title { font-size: 1.3rem; font-weight: 700; color: var(--header-text); display: flex; align-items: center; gap: 10px; }
+    .theme-btn { background: var(--bg-main); border: 1px solid var(--border-color); color: var(--text-main); padding: 8px 16px; border-radius: 20px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 5px; font-family: inherit; }
+
+    .exam-banner { background: var(--bg-card); border: 1px solid var(--border-color); padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 20px; box-shadow: var(--shadow-sm); }
+    .exam-banner h1 { font-size: 1.4rem; font-weight: 700; color: var(--text-main); margin-bottom: 4px; }
+    .exam-banner p { font-size: 0.9rem; color: var(--text-muted); }
+
+    .screen-section { padding: 5px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; padding: 28px; box-shadow: var(--shadow-sm); max-width: 460px; margin: 0 auto; }
+    
+    .form-group { margin-bottom: 16px; text-align: left; }
+    .form-group label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9rem; color: var(--text-main); }
+    .form-group input { width: 100%; padding: 12px; background: var(--input-bg); border: 1.5px solid var(--border-color); color: var(--text-main); border-radius: 8px; font-family: inherit; font-size: 0.95rem; outline: none; }
+    .form-group input:focus { border-color: var(--primary-color); }
+    
+    .btn { padding: 12px 20px; font-size: 1rem; font-weight: 700; border-radius: 8px; cursor: pointer; border: none; width: 100%; margin-top: 10px; font-family: inherit; transition: 0.2s; }
+    .btn-primary { background: var(--primary-color); color: var(--btn-text); }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-2px); }
+
+    .timer-bar { 
+      position: sticky; 
+      top: 10px; 
+      background: var(--bg-card); 
+      border: 2px solid var(--primary-color); 
+      padding: 12px 18px; 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 10px; 
+      justify-content: space-between; 
+      align-items: center; 
+      z-index: 1000; 
+      border-radius: 12px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+      margin-bottom: 20px;
+    }
+    .timer-box { font-size: 1.15rem; font-weight: 700; color: var(--danger-color); background: var(--bg-main); padding: 4px 12px; border-radius: 20px; border: 1px solid var(--danger-color); }
+    .warning-badge { font-size: 0.85rem; background: var(--bg-main); color: var(--danger-color); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--danger-color); font-weight: 600; }
+    .answered-badge { font-size: 0.85rem; background: var(--bg-main); color: var(--primary-color); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--primary-color); font-weight: 700; }
+
+    .mcq-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: var(--shadow-sm); transition: 0.2s; }
+    .omr-locked-card { border-color: var(--primary-color); }
+    .question-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
+    .question-title { font-size: 1.05rem; font-weight: 700; color: var(--text-main); }
+    .stem-box { display: block; background: rgba(30, 58, 138, 0.07); border-left: 3px solid var(--primary-color); padding: 6px 10px; margin-bottom: 8px; border-radius: 4px; font-size: 0.92rem; color: var(--text-main); }
+    .stem-svg { display: block; margin: 8px auto 4px; max-width: 100%; height: auto; color: var(--text-main); }
+    .omr-status-badge { display: none; font-size: 0.75rem; background: var(--bg-main); color: var(--primary-color); border: 1px solid var(--primary-color); padding: 2px 8px; border-radius: 12px; font-weight: 700; white-space: nowrap; }
+
+    .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 580px) { .options-grid { grid-template-columns: 1fr; } }
+    
+    .option-label { display: flex; align-items: center; padding: 12px; background: var(--bg-main); border: 1.5px solid var(--border-color); border-radius: 8px; cursor: pointer; font-size: 0.95rem; color: var(--text-main); font-weight: 600; transition: 0.2s; }
+    .option-label:hover { border-color: var(--primary-color); }
+    .option-label input { margin-right: 10px; accent-color: var(--primary-color); transform: scale(1.1); }
+    .option-label.omr-selected { border-color: var(--primary-color); background: rgba(234, 179, 8, 0.12); font-weight: 700; }
+
+    .graph-svg { width: 115px; height: 95px; display: block; margin: 0 auto; color: var(--text-main); }
+
+    .correct-option { border-color: var(--success-color) !important; background-color: rgba(34, 197, 94, 0.12) !important; }
+    .wrong-option { border-color: var(--danger-color) !important; background-color: rgba(239, 68, 68, 0.12) !important; }
+
+    .solution-notes { display: none; }
+    
+    .review-details-box { margin-top: 15px; padding: 15px; background: var(--review-bg); border-radius: 8px; border: 1px solid var(--border-color); }
+    .review-stat { margin-bottom: 6px; font-weight: 600; font-size: 1rem; }
+    .review-explanation { border-top: 1px dashed var(--border-color); padding-top: 10px; margin-top: 10px; font-family: 'Kalam', 'Hind Siliguri', cursive; color: var(--text-main); font-size: 1rem; }
+    .highlight { background-color: rgba(234, 179, 8, 0.2); padding: 0 4px; border-radius: 3px; color: var(--text-main); font-weight: 600; }
+    .blue-heading { color: var(--primary-color); font-weight: 700; font-family: 'Hind Siliguri', sans-serif; }
+
+    .result-summary { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; padding: 28px; text-align: center; margin-bottom: 20px; box-shadow: var(--shadow-sm); }
+    .score-badge { font-size: 2.5rem; font-weight: 800; color: var(--primary-color); }
+    .result-meta { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-top: 10px; font-size: 0.95rem; font-weight: 600; }
+
+    .nav-tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+    .tab-btn { flex: 1; padding: 12px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; font-family: inherit; font-size: 1rem; font-weight: 700; cursor: pointer; color: var(--text-muted); transition: 0.3s; }
+    .tab-btn.active { background: var(--primary-color); color: var(--btn-text); border-color: var(--primary-color); }
+
+    .lb-container { border: 1px solid var(--border-color); border-radius: 12px; overflow-x: auto; background: var(--bg-card); box-shadow: var(--shadow-sm); }
+    table { width: 100%; border-collapse: collapse; text-align: left; min-width: 520px; }
+    th, td { padding: 14px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
+    th { background: var(--bg-main); font-weight: 700; color: var(--text-muted); font-size: 0.85rem; }
+    .my-row { background-color: rgba(234, 179, 8, 0.15) !important; }
+    .lb-score { color: var(--primary-color); font-weight: 800; font-size: 1.15rem; text-align: center; }
+    .rank-badge { display: inline-block; background: var(--bg-main); padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 0.85rem; border: 1px solid var(--border-color); }
+    .time-pill { display: inline-block; background: var(--bg-main); color: var(--text-main); padding: 4px 10px; border-radius: 8px; font-size: 0.82rem; font-weight: 700; border: 1px solid var(--border-color); }
+
+    .footer-notice { 
+      text-align: center; 
+      padding: 16px 20px; 
+      background: linear-gradient(135deg, #090a0f 0%, #171922 50%, #050608 100%); 
+      color: #e2e8f0; 
+      font-size: 0.9rem; 
+      font-weight: 600; 
+      border-top: 2px solid #d4af37;
+      border-radius: 12px;
+      margin-top: 25px;
+    }
+    .golden-text {
+      background: linear-gradient(135deg, #bf953f 0%, #fcf6ba 25%, #b38728 50%, #fbf5b7 75%, #aa771c 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      font-weight: 800;
+      font-size: 1.05rem;
+      display: inline-block;
+    }
+
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.8); display: none; justify-content: center; align-items: center; z-index: 9999; backdrop-filter: blur(4px); }
+    .modal-content { background: var(--bg-card); padding: 25px; border-radius: 16px; max-width: 380px; text-align: center; width: 90%; border: 1px solid var(--border-color); box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+  </style>
+</head>
+<body>
+
+  <div class="modal-overlay" id="customModal">
+    <div class="modal-content">
+      <div style="font-size: 2rem; margin-bottom: 10px;">🔔</div>
+      <p id="modalMessage" style="margin-bottom: 20px; font-weight: 600; font-size: 0.95rem; color: var(--text-main);"></p>
+      <button class="btn btn-primary" onclick="closeModal()">ঠিক আছে</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="header-bar">
+      <div class="header-title">
+        <span style="font-size: 1.6rem; color: var(--primary-color);">⚡</span>
+        HSC Cloud Exam Hub
+      </div>
+      <button class="theme-btn" onclick="toggleTheme()">🌓 Theme</button>
+    </div>
+
+    <div class="exam-banner">
+      <h1>এইচএসসি পদার্থবিজ্ঞান ২য় পত্র - তাপগতিবিদ্যা এমসিকিউ পরীক্ষা</h1>
+      <p>২৫টি গুরুত্বপূর্ণ অধ্যায়ভিত্তিক প্রশ্ন (OMR লক ও অটো-শাফল যুক্ত)</p>
+    </div>
+
+    <!-- ১. নাম ও কলেজ ইনপুট স্ক্রিন -->
+    <div id="profileSetupScreen" class="screen-section">
+      <div class="card">
+        <h3 style="color: var(--text-main); margin-bottom: 8px; text-align: center;">পরীক্ষার্থীর তথ্য</h3>
+        <p style="margin-bottom: 20px; color: var(--text-muted); font-size: 0.85rem; text-align: center;">লিডারবোর্ডের জন্য আপনার সঠিক নাম ও কলেজের নাম দিন।</p>
+        <div class="form-group">
+          <label>পরীক্ষার্থীর নাম:</label>
+          <input type="text" id="studentNameInput" placeholder="পূর্ণ নাম লিখুন" />
+        </div>
+        <div class="form-group">
+          <label>কলেজের নাম:</label>
+          <input type="text" id="collegeNameInput" placeholder="কলেজের নাম লিখুন" />
+        </div>
+        <button class="btn btn-primary" onclick="submitProfileAndStart()">পরীক্ষা শুরু করুন 🚀</button>
+      </div>
+    </div>
+
+    <!-- ২. পরীক্ষা নেওয়ার স্ক্রিন -->
+    <div id="examArea" style="display: none;">
+      <div class="timer-bar">
+        <div class="answered-badge" id="answeredBadge">উত্তর দেওয়া হয়েছে: ০/২৫</div>
+        <div class="warning-badge" id="warningText">ট্যাব পরিবর্তন: ০/২</div>
+        <div class="timer-box" id="timeDisplay">20:00</div>
+      </div>
+
+      <div class="questions-container">
+        <form id="quizForm">
+          
+          <!-- Q1 -->
+          <div class="mcq-card" id="qCard-1">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১.</span> \( -8^{\circ}\text{C} \) এবং \( 27^{\circ}\text{C} \) তাপমাত্রার মধ্যে ক্রিয়ারত একটি হিমায়কের সর্বোচ্চ কার্যকৃত সহগ কত?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q1" value="A"> \( 8.57 \)</label>
+              <label class="option-label"><input type="radio" name="q1" value="B"> \( 7.57 \)</label>
+              <label class="option-label"><input type="radio" name="q1" value="C"> \( 2.131 \)</label>
+              <label class="option-label"><input type="radio" name="q1" value="D"> \( 0.469 \)</label>
+            </div>
+            <div class="solution-notes">\( K = \frac{T_2}{T_1 - T_2} = \frac{-8 + 273}{300 - 265} = \frac{265}{35} = \mathbf{7.57} \)।</div>
+          </div>
+
+          <!-- Q2 -->
+          <div class="mcq-card" id="qCard-2">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২.</span> থার্মোমিটার এর ধারণা পাওয়া যায় তাপগতিবিদ্যার কোন সূত্র হতে?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q2" value="A"> শূন্যতম</label>
+              <label class="option-label"><input type="radio" name="q2" value="B"> প্রথম</label>
+              <label class="option-label"><input type="radio" name="q2" value="C"> দ্বিতীয়</label>
+              <label class="option-label"><input type="radio" name="q2" value="D"> তৃতীয়</label>
+            </div>
+            <div class="solution-notes">তাপগতিবিদ্যার <span class="highlight">শূন্যতম সূত্র</span> থেকে তাপমাত্রা ও থার্মোমিটার তৈরির মূলনীতি পাওয়া যায়।</div>
+          </div>
+
+          <!-- Q3 -->
+          <div class="mcq-card" id="qCard-3">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৩.</span> তাপের যান্ত্রিক সমতার একক কোনটি?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q3" value="A"> জুল-ক্যালরি</label>
+              <label class="option-label"><input type="radio" name="q3" value="B"> জুল/ক্যালরি</label>
+              <label class="option-label"><input type="radio" name="q3" value="C"> ক্যালরি/গ্রাম</label>
+              <label class="option-label"><input type="radio" name="q3" value="D"> ক্যালরি/জুল</label>
+            </div>
+            <div class="solution-notes">তাপের যান্ত্রিক সমতা \( J = \frac{W}{Q} \)। এর একক <span class="highlight">জুল/ক্যালরি</span>।</div>
+          </div>
+
+          <!-- Q4 -->
+          <div class="mcq-card" id="qCard-4">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৪.</span> পানিতে \( i \) প্রবাহ \( t \) সময় ধরে চালনা করলে পানির তাপমাত্রা \( \theta \) হয়। নিচের কোন লেখচিত্র ইহা প্রকাশ করে?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q4" value="A">
+                <svg class="graph-svg" viewBox="0 0 120 100">
+                  <line x1="25" y1="80" x2="105" y2="80" stroke="currentColor" stroke-width="1.6"/>
+                  <line x1="25" y1="80" x2="25" y2="12" stroke="currentColor" stroke-width="1.6"/>
+                  <polygon points="103,77 109,80 103,83" fill="currentColor"/>
+                  <polygon points="22,14 25,8 28,14" fill="currentColor"/>
+                  <line x1="25" y1="58" x2="92" y2="20" stroke="var(--primary-color)" stroke-width="2.2"/>
+                  <text x="12" y="25" font-size="11" fill="currentColor">θ</text>
+                  <text x="15" y="93" font-size="11" fill="currentColor">O</text>
+                  <text x="86" y="94" font-size="11" fill="currentColor">i²</text>
+                </svg>
+              </label>
+              <label class="option-label"><input type="radio" name="q4" value="B">
+                <svg class="graph-svg" viewBox="0 0 120 100">
+                  <line x1="25" y1="80" x2="105" y2="80" stroke="currentColor" stroke-width="1.6"/>
+                  <line x1="25" y1="80" x2="25" y2="12" stroke="currentColor" stroke-width="1.6"/>
+                  <polygon points="103,77 109,80 103,83" fill="currentColor"/>
+                  <polygon points="22,14 25,8 28,14" fill="currentColor"/>
+                  <path d="M 25 56 Q 75 56 88 18" fill="none" stroke="var(--primary-color)" stroke-width="2.2"/>
+                  <text x="12" y="25" font-size="11" fill="currentColor">θ</text>
+                  <text x="15" y="93" font-size="11" fill="currentColor">O</text>
+                  <text x="86" y="94" font-size="11" fill="currentColor">i²</text>
+                </svg>
+              </label>
+              <label class="option-label"><input type="radio" name="q4" value="C">
+                <svg class="graph-svg" viewBox="0 0 120 100">
+                  <line x1="25" y1="80" x2="105" y2="80" stroke="currentColor" stroke-width="1.6"/>
+                  <line x1="25" y1="80" x2="25" y2="12" stroke="currentColor" stroke-width="1.6"/>
+                  <polygon points="103,77 109,80 103,83" fill="currentColor"/>
+                  <polygon points="22,14 25,8 28,14" fill="currentColor"/>
+                  <path d="M 38 80 Q 75 78 82 32" fill="none" stroke="var(--primary-color)" stroke-width="2.2"/>
+                  <text x="12" y="25" font-size="11" fill="currentColor">θ</text>
+                  <text x="15" y="93" font-size="11" fill="currentColor">O</text>
+                  <text x="86" y="94" font-size="11" fill="currentColor">i²</text>
+                </svg>
+              </label>
+              <label class="option-label"><input type="radio" name="q4" value="D">
+                <svg class="graph-svg" viewBox="0 0 120 100">
+                  <line x1="25" y1="80" x2="105" y2="80" stroke="currentColor" stroke-width="1.6"/>
+                  <line x1="25" y1="80" x2="25" y2="12" stroke="currentColor" stroke-width="1.6"/>
+                  <polygon points="103,77 109,80 103,83" fill="currentColor"/>
+                  <polygon points="22,14 25,8 28,14" fill="currentColor"/>
+                  <path d="M 25 80 Q 58 28 92 64" fill="none" stroke="var(--primary-color)" stroke-width="2.2"/>
+                  <text x="12" y="25" font-size="11" fill="currentColor">θ</text>
+                  <text x="15" y="93" font-size="11" fill="currentColor">O</text>
+                  <text x="86" y="94" font-size="11" fill="currentColor">i²</text>
+                </svg>
+              </label>
+            </div>
+            <div class="solution-notes">\( Q = W \Rightarrow ms\Delta\theta = i^2Rt \Rightarrow \Delta\theta \propto i^2 \)। তাই \( \theta \) বনাম \( i^2 \) লেখচিত্রটি একটি সরলরেখা হবে (<span class="highlight">Option A</span>)।</div>
+          </div>
+
+          <!-- Q5 -->
+          <div class="mcq-card" id="qCard-5">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৫.</span> এনট্রপি সম্পর্কে বলা যায়—<br/>i. পরম মান নির্ণয় করা যায় না<br/>ii. পরিবর্তন ধনাত্মক হতে পারে<br/>iii. পরিবর্তন ঋণাত্মক হতে পারে<br/>নিচের কোনটি সঠিক?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q5" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q5" value="B"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q5" value="C"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q5" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">এনট্রপির পরম মান নির্ণয় করা যায় না, শুধু পরিবর্তন নির্ণয় করা যায় এবং তাপ গ্রহণ বা বর্জনের ওপর ভিত্তি করে এর পরিবর্তন ধনাত্মক বা ঋণাত্মক হতে পারে। সুতরাং <span class="highlight">i, ii ও iii সঠিক</span>।</div>
+          </div>
+
+          <!-- Q6 -->
+          <div class="mcq-card" id="qCard-6">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৬.</span> স্থির চাপে একটি গ্যাসে তাপ প্রয়োগ করায় এর—<br/>i. তাপমাত্রা বেড়ে যাবে<br/>ii. বহিঃস্থ কাজ সম্পন্ন হবে<br/>iii. আয়তন বেড়ে যাবে<br/>নিচের কোনটি সঠিক?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q6" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q6" value="B"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q6" value="C"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q6" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">স্থির চাপে গ্যাসে তাপ প্রয়োগ করলে এর তাপমাত্রা ও আয়তন বৃদ্ধি পায়। উত্তর: <span class="highlight">i ও iii</span>।</div>
+          </div>
+
+          <!-- Q7 -->
+          <div class="mcq-card" id="qCard-7">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৭.</span> \( T_1 \) ও \( T_2 \) তাপমাত্রার দুটি বস্তুর অভ্যন্তরীণ শক্তি যথাক্রমে \( U_1 \) ও \( U_2 \); যেখানে \( T_1 > T_2 \)। বিচ্ছিন্ন সিস্টেমে বস্তুদ্বয় তাপীয় সাম্যাবস্থায় আসলে নিচের কোনটি ঘটে?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q7" value="A"> \( U_1 \) বৃদ্ধি \( U_2 \) হ্রাস</label>
+              <label class="option-label"><input type="radio" name="q7" value="B"> \( U_1 \) হ্রাস \( U_2 \) বৃদ্ধি</label>
+              <label class="option-label"><input type="radio" name="q7" value="C"> \( U_1 \) বৃদ্ধি \( U_2 \) বৃদ্ধি</label>
+              <label class="option-label"><input type="radio" name="q7" value="D"> \( U_1 \) হ্রাস \( U_2 \) হ্রাস</label>
+            </div>
+            <div class="solution-notes">তাপমাত্রা বেশি বস্তু থেকে তাপমাত্রা কম বস্তুতে তাপ প্রবাহিত হয়। তাই <span class="highlight">\( U_1 \) তাপ হারালে অভ্যন্তরীণ শক্তি হ্রাস পাবে এবং \( U_2 \) এর অভ্যন্তরীণ শক্তি বৃদ্ধি পাবে</span>।</div>
+          </div>
+
+          <!-- Q8 -->
+          <div class="mcq-card" id="qCard-8">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">৮.</span> আদর্শ গ্যাস ধ্রুবক \( R \) হলে এক পারমাণবিক গ্যাসের ক্ষেত্রে \( C_P = ? \)</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q8" value="A"> \( 4R \)</label>
+              <label class="option-label"><input type="radio" name="q8" value="B"> \( \frac{7}{2}R \)</label>
+              <label class="option-label"><input type="radio" name="q8" value="C"> \( 3R \)</label>
+              <label class="option-label"><input type="radio" name="q8" value="D"> \( \frac{5}{2}R \)</label>
+            </div>
+            <div class="solution-notes">\( C_P = \left(1 + \frac{f}{2}\right)R \)। এক পারমাণবিক গ্যাসের স্বাধীনতার মাত্রা \( f = 3 \) হলে \( C_P = \left(1 + \frac{3}{2}\right)R = \mathbf{\frac{5}{2}R} \)।</div>
+          </div>
+
+          <!-- Q9 -->
+          <div class="mcq-card" id="qCard-9">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">
+                  <svg class="stem-svg" viewBox="0 0 240 130" width="220" height="120">
+                    <line x1="40" y1="105" x2="215" y2="105" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="40" y1="105" x2="40" y2="15" stroke="currentColor" stroke-width="1.6"/>
+                    <polygon points="212,102 218,105 212,108" fill="currentColor"/>
+                    <polygon points="37,18 40,12 43,18" fill="currentColor"/>
+                    <polygon points="85,75 165,75 85,30" fill="rgba(234, 179, 8, 0.18)" stroke="var(--primary-color)" stroke-width="2"/>
+                    <line x1="40" y1="30" x2="85" y2="30" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <line x1="40" y1="75" x2="85" y2="75" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <line x1="85" y1="75" x2="85" y2="105" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <line x1="165" y1="75" x2="165" y2="105" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <text x="15" y="14" font-size="10.5" fill="currentColor" font-weight="600">P(atm)</text>
+                    <text x="26" y="34" font-size="10" fill="currentColor">4</text>
+                    <text x="26" y="79" font-size="10" fill="currentColor">2</text>
+                    <text x="82" y="120" font-size="10" fill="currentColor">1</text>
+                    <text x="162" y="120" font-size="10" fill="currentColor">3</text>
+                    <text x="195" y="122" font-size="10.5" fill="currentColor" font-weight="600">V(L)</text>
+                  </svg>
+                </span>
+                <span class="q-serial-num">৯.</span> উপরের লেখচিত্রে কত কাজ হয়েছে—
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q9" value="A"> \( 405.2\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q9" value="B"> \( 607.8\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q9" value="C"> \( 709.1\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q9" value="D"> \( 202.6\text{ J} \)</label>
+            </div>
+            <div class="solution-notes">\( W = \text{Area} = \frac{1}{2}(4 - 2) \times 101325 \times (3 - 1) \times 10^{-3}\text{ J} = \mathbf{202.6\text{ J}} \)।</div>
+          </div>
+
+          <!-- Q10 -->
+          <div class="mcq-card" id="qCard-10">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">
+                  উদ্দীপক: চিত্রে সিলিন্ডারে রক্ষিত \( 1\text{ mole} \) গ্যাসে \( dQ \) তাপ সরবরাহ করায় পিস্টন \( X \) অবস্থান হতে \( Y \) অবস্থানে আসে (\( P = 3.5 \times 10^5\text{ Nm}^{-2} \))। এতে অন্তঃস্থ শক্তি \( 207\text{ J} \) হ্রাস পায়। পিস্টনের প্রস্থচ্ছেদের ক্ষেত্রফল \( = 0.1\text{ m}^2 \)। \( X \) ও \( Y \) এর দূরত্ব \( = 5 \times 10^{-2}\text{ m} \)।
+                  <svg class="stem-svg" viewBox="0 0 260 95" width="240" height="88">
+                    <path d="M 45 20 L 200 20 M 45 75 L 200 75 M 45 20 L 45 75" fill="none" stroke="currentColor" stroke-width="2"/>
+                    <line x1="120" y1="22" x2="120" y2="73" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4,3"/>
+                    <rect x="165" y="21" width="12" height="53" fill="var(--primary-color)"/>
+                    <line x1="177" y1="47" x2="225" y2="47" stroke="currentColor" stroke-width="3"/>
+                    <text x="82" y="51" font-size="10.5" text-anchor="middle" fill="currentColor" font-weight="600">dQ</text>
+                    <text x="120" y="15" font-size="10.5" text-anchor="middle" fill="currentColor" font-weight="700">X</text>
+                    <text x="171" y="15" font-size="10.5" text-anchor="middle" fill="currentColor" font-weight="700">Y</text>
+                    <text x="145" y="90" font-size="9.5" text-anchor="middle" fill="currentColor">P = 3.5 × 10⁵ Nm⁻²</text>
+                  </svg>
+                </span>
+                <span class="q-serial-num">১০.</span> সম্পন্ন কৃতকাজ কত?
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q10" value="A"> \( 1.75 \times 10^3\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q10" value="B"> \( 1.75 \times 10^5\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q10" value="C"> \( 7 \times 10^5\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q10" value="D"> \( 7 \times 10^7\text{ J} \)</label>
+            </div>
+            <div class="solution-notes">\( dW = PdV = PAdl = 3.5 \times 10^5 \times 0.1 \times 5 \times 10^{-2}\text{ J} = 1750\text{ J} = \mathbf{1.75 \times 10^3\text{ J}} \)।</div>
+          </div>
+
+          <!-- Q11 -->
+          <div class="mcq-card" id="qCard-11">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">উদ্দীপক: সিলিন্ডারে রক্ষিত \( 1\text{ mole} \) গ্যাসে \( dQ \) তাপ সরবরাহ করায় পিস্টন \( X \) অবস্থান হতে \( Y \) অবস্থানে আসে (\( P = 3.5 \times 10^5\text{ Nm}^{-2} \))। এতে অন্তঃস্থ শক্তি \( 207\text{ J} \) হ্রাস পায়। পিস্টনের প্রস্থচ্ছেদের ক্ষেত্রফল \( = 0.1\text{ m}^2 \) এবং \( X \) ও \( Y \) এর দূরত্ব \( = 5 \times 10^{-2}\text{ m} \)।</span>
+                <span class="q-serial-num">১১.</span> সিলিন্ডারে সরবরাহকৃত তাপশক্তি \( dQ \) এর পরিমাণ হল—
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q11" value="A"> \( 7.002 \times 10^5\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q11" value="B"> \( 6.998 \times 10^5\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q11" value="C"> \( 1.957 \times 10^3\text{ J} \)</label>
+              <label class="option-label"><input type="radio" name="q11" value="D"> \( 1.543 \times 10^3\text{ J} \)</label>
+            </div>
+            <div class="solution-notes">\( dQ = dW + dU = 1750 - 207 = 1543\text{ J} = \mathbf{1.543 \times 10^3\text{ J}} \)।</div>
+          </div>
+
+          <!-- Q12 -->
+          <div class="mcq-card" id="qCard-12">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১২.</span> রুদ্ধতাপীয় সংকোচনে—<br/>i. বর্জিত তাপ শূন্য<br/>ii. তাপমাত্রা হ্রাস পায়<br/>iii. এন্ট্রপি অপরিবর্তিত থাকে<br/>নিচের কোনটি সঠিক?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q12" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q12" value="B"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q12" value="C"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q12" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">রুদ্ধতাপীয় প্রক্রিয়ায় \( dQ = 0 \therefore dS = 0 \)। সংকোচনে তাপমাত্রা বৃদ্ধি পায়। সুতরাং <span class="highlight">i ও iii সঠিক</span>।</div>
+          </div>
+
+          <!-- Q13 -->
+          <div class="mcq-card" id="qCard-13">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১৩.</span> রুদ্ধতাপীয় পরিবর্তনের ক্ষেত্রে—<br/>i. \( PV^{\gamma} = k \)<br/>ii. \( TV^{\gamma-1} = k \)<br/>iii. \( T^{\gamma}P^{1+\gamma} = k \)<br/>নিচের কোনটি সঠিক?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q13" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q13" value="B"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q13" value="C"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q13" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">রুদ্ধতাপীয় পরিবর্তনে \( PV^{\gamma} = k \), \( TV^{\gamma-1} = k \) এবং \( T^{\gamma}P^{1-\gamma} = k \) (বা \( P_1T_1^{\frac{\gamma}{1-\gamma}} = P_2T_2^{\frac{\gamma}{1-\gamma}} \))। তাই <span class="highlight">i ও ii সঠিক</span>।</div>
+          </div>
+
+          <!-- Q14 -->
+          <div class="mcq-card" id="qCard-14">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">
+                  <svg class="stem-svg" viewBox="0 0 220 120" width="200" height="110">
+                    <line x1="35" y1="95" x2="195" y2="95" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="35" y1="95" x2="35" y2="15" stroke="currentColor" stroke-width="1.6"/>
+                    <polygon points="192,92 198,95 192,98" fill="currentColor"/>
+                    <polygon points="32,18 35,12 38,18" fill="currentColor"/>
+                    <path d="M 65 28 Q 95 62 155 76" fill="none" stroke="var(--primary-color)" stroke-width="2.2"/>
+                    <circle cx="65" cy="28" r="2.8" fill="var(--primary-color)"/>
+                    <circle cx="155" cy="76" r="2.8" fill="var(--primary-color)"/>
+                    <line x1="65" y1="28" x2="65" y2="95" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <line x1="155" y1="76" x2="155" y2="95" stroke="currentColor" stroke-width="1" stroke-dasharray="3,3"/>
+                    <text x="20" y="20" font-size="11" fill="currentColor" font-weight="700">T</text>
+                    <text x="190" y="112" font-size="11" fill="currentColor" font-weight="700">V</text>
+                    <text x="68" y="24" font-size="11" fill="currentColor" font-weight="700">a</text>
+                    <text x="158" y="72" font-size="11" fill="currentColor" font-weight="700">b</text>
+                    <text x="60" y="110" font-size="10" fill="currentColor">V₁</text>
+                    <text x="150" y="110" font-size="10" fill="currentColor">V₂</text>
+                  </svg>
+                </span>
+                <span class="q-serial-num">১৪.</span> চিত্রে \( ab \) লেখচিত্রটি নির্দেশ করে—
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q14" value="A"> সমোষ্ণ</label>
+              <label class="option-label"><input type="radio" name="q14" value="B"> সমআয়তন</label>
+              <label class="option-label"><input type="radio" name="q14" value="C"> সমচাপ</label>
+              <label class="option-label"><input type="radio" name="q14" value="D"> রুদ্ধতাপীয়</label>
+            </div>
+            <div class="solution-notes">আয়তন বৃদ্ধির সাথে সাথে তাপমাত্রা হ্রাস পাওয়ায় লেখচিত্রটি <span class="highlight">রুদ্ধতাপীয়</span> প্রক্রিয়া নির্দেশ করে।</div>
+          </div>
+
+          <!-- Q15 -->
+          <div class="mcq-card" id="qCard-15">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১৫.</span> রুদ্ধতাপে \( 1\text{ atm} \) চাপে রাখা গ্যাসকে প্রসারিত করে দ্বিগুণ করা হলে যে চূড়ান্ত চাপ হয়, সমোষ্ণ প্রক্রিয়ায় সেই একই চাপ পেতে গ্যাসকে কতগুণ প্রসারিত করতে হবে?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q15" value="A"> \( 1.4 \)</label>
+              <label class="option-label"><input type="radio" name="q15" value="B"> \( 2.6 \)</label>
+              <label class="option-label"><input type="radio" name="q15" value="C"> \( 5.2 \)</label>
+              <label class="option-label"><input type="radio" name="q15" value="D"> \( 7.8 \)</label>
+            </div>
+            <div class="solution-notes">\( P_2 = P_1 \frac{V_1^{\gamma}}{V_2^{\gamma}} = 1 \times \left(\frac{1}{2}\right)^{1.4} = 0.379\text{ atm} \)। <br/>সমোষ্ণতে, \( \frac{V_2}{V_1} = \frac{P_1}{P_2} = \frac{1}{0.379} = \mathbf{2.6} \)।</div>
+          </div>
+
+          <!-- Q16 -->
+          <div class="mcq-card" id="qCard-16">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১৬.</span> দুটি বস্তুর মধ্যে সংঘর্ষের ফলে উৎপন্ন তাপ কোন প্রক্রিয়া অনুসরণ করে?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q16" value="A"> সমোষ্ণ</label>
+              <label class="option-label"><input type="radio" name="q16" value="B"> রুদ্ধতাপীয়</label>
+              <label class="option-label"><input type="radio" name="q16" value="C"> প্রত্যাবর্তী</label>
+              <label class="option-label"><input type="radio" name="q16" value="D"> অপ্রত্যাবর্তী</label>
+            </div>
+            <div class="solution-notes">সংঘর্ষের ফলে উৎপন্ন তাপ irreversible, তাই এটি <span class="highlight">অপ্রত্যাবর্তী</span> প্রক্রিয়া।</div>
+          </div>
+
+          <!-- Q17 -->
+          <div class="mcq-card" id="qCard-17">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">১৭.</span> কার্নোর চক্রের ৩য় ধাপে সিস্টেমের এন্ট্রপির ক্ষেত্রে কোনটি প্রযোজ্য?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q17" value="A"> শূন্য হয়</label>
+              <label class="option-label"><input type="radio" name="q17" value="B"> বৃদ্ধি পায়</label>
+              <label class="option-label"><input type="radio" name="q17" value="C"> হ্রাস পায়</label>
+              <label class="option-label"><input type="radio" name="q17" value="D"> স্থির থাকে</label>
+            </div>
+            <div class="solution-notes">কার্নোর চক্রের ৩য় ধাপ হলো সমোষ্ণ সংকোচন; এতে সিস্টেম তাপ বর্জন করায় এন্ট্রপি (\( dS \)) <span class="highlight">হ্রাস পায়</span>।</div>
+          </div>
+
+          <!-- Q18 -->
+          <div class="mcq-card" id="qCard-18">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">
+                  উদ্দীপক: কার্নো ইঞ্জিনের \( P-V \) লেখ দেখানো হলো, যেখানে \( 1\text{ mol He} \) গ্যাস ব্যবহৃত হয়েছে (\( T_2 = 300\text{ K}, R = 8.314\text{ J mol}^{-1}\text{K}^{-1} \))।
+                  <svg class="stem-svg" viewBox="0 0 240 130" width="220" height="120">
+                    <line x1="35" y1="105" x2="215" y2="105" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="35" y1="105" x2="35" y2="15" stroke="currentColor" stroke-width="1.6"/>
+                    <polygon points="212,102 218,105 212,108" fill="currentColor"/>
+                    <polygon points="32,18 35,12 38,18" fill="currentColor"/>
+                    <path d="M 65 28 Q 95 44 135 50 Q 152 72 175 84 Q 130 82 95 72 Q 78 52 65 28 Z" fill="rgba(234, 179, 8, 0.14)" stroke="var(--primary-color)" stroke-width="2"/>
+                    <text x="54" y="27" font-size="10.5" fill="currentColor" font-weight="700">A</text>
+                    <text x="139" y="48" font-size="10.5" fill="currentColor" font-weight="700">B</text>
+                    <text x="179" y="88" font-size="10.5" fill="currentColor" font-weight="700">C</text>
+                    <text x="82" y="80" font-size="10.5" fill="currentColor" font-weight="700">D</text>
+                    <text x="12" y="20" font-size="10" fill="currentColor" font-weight="600">P(Pa)</text>
+                    <text x="195" y="121" font-size="10" fill="currentColor" font-weight="600">V(L)</text>
+                    <text x="148" y="100" font-size="9.5" fill="currentColor">T₂ = 300 K</text>
+                  </svg>
+                </span>
+                <span class="q-serial-num">১৮.</span> উদ্দীপকে \( BC \) অংশে ধ্রুবক থাকে—
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q18" value="A"> চাপ</label>
+              <label class="option-label"><input type="radio" name="q18" value="B"> আয়তন</label>
+              <label class="option-label"><input type="radio" name="q18" value="C"> তাপমাত্রা</label>
+              <label class="option-label"><input type="radio" name="q18" value="D"> এনট্রপি</label>
+            </div>
+            <div class="solution-notes">\( BC \) অংশ রুদ্ধতাপীয় প্রসারণ, তাই \( dS = 0 \) অর্থাৎ <span class="highlight">এনট্রপি</span> ধ্রুবক থাকে।</div>
+          </div>
+
+          <!-- Q19 -->
+          <div class="mcq-card" id="qCard-19">
+            <div class="question-header-row">
+              <div class="question-title">
+                <span class="stem-box">উদ্দীপক: কার্নো ইঞ্জিনের \( P-V \) লেখচিত্রে \( 1\text{ mol He} \) গ্যাস ব্যবহৃত হয়েছে (\( T_2 = 300\text{ K}, R = 8.314\text{ J mol}^{-1}\text{K}^{-1} \))।</span>
+                <span class="q-serial-num">১৯.</span> উদ্দীপক অনুসারে—<br/>i. \( AB \) অংশ \( T^{\gamma}P^{1-\gamma} = \text{ধ্রুবক} \) সমীকরণটি মেনে চলে<br/>ii. উদ্দীপকে প্রতিটি অংশে প্রবাহচিত্র উল্টিয়ে দিলে সেটি রেফ্রিজারেটরের \( P-V \) লেখচিত্রে রূপান্তরিত হয়<br/>iii. \( CD \) অংশের কৃতকাজ \( -1728\text{ J} \)<br/>নিচের কোনটি সঠিক?
+              </div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q19" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q19" value="B"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q19" value="C"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q19" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">\( AB \) অংশ সমোষ্ণ প্রসারণ হওয়ায় এটি \( PV = k \) সমীকরণ মেনে চলে (তাই i ভুল)। সুতরাং <span class="highlight">ii ও iii সঠিক</span>।</div>
+          </div>
+
+          <!-- Q20 -->
+          <div class="mcq-card" id="qCard-20">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২০.</span> কোনো তাপ ইঞ্জিনের তাপগ্রাহকের তাপমাত্রা \( 360\text{ K} \) এবং দক্ষতা \( 40\% \)। ইঞ্জিনের দক্ষতা দ্বিগুণ করতে হলে উৎসের তাপমাত্রা বৃদ্ধি করতে হবে—</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q20" value="A"> \( 450\text{ K} \)</label>
+              <label class="option-label"><input type="radio" name="q20" value="B"> \( 600\text{ K} \)</label>
+              <label class="option-label"><input type="radio" name="q20" value="C"> \( 900\text{ K} \)</label>
+              <label class="option-label"><input type="radio" name="q20" value="D"> \( 1200\text{ K} \)</label>
+            </div>
+            <div class="solution-notes">\( 0.4 = 1 - \frac{360}{T} \Rightarrow T = 600\text{ K} \)। <br/>\( 2 \times 0.4 = 1 - \frac{360}{T'} \Rightarrow T' = 1800\text{ K} \)। <br/>\( \therefore \Delta T = 1800 - 600 = \mathbf{1200\text{ K}} \)।</div>
+          </div>
+
+          <!-- Q21 -->
+          <div class="mcq-card" id="qCard-21">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২১.</span> একটি রেফ্রিজারেটর শীতল তাপাধার থেকে \( 450\text{ J} \) তাপ গ্রহণ করে উষ্ণ তাপাধারে \( 600\text{ J} \) তাপশক্তি বর্জন করে। রেফ্রিজারেটরটির কার্যসম্পাদন সহগ কত?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q21" value="A"> \( 3 \)</label>
+              <label class="option-label"><input type="radio" name="q21" value="B"> \( 4 \)</label>
+              <label class="option-label"><input type="radio" name="q21" value="C"> \( 1.83 \)</label>
+              <label class="option-label"><input type="radio" name="q21" value="D"> \( 2.33 \)</label>
+            </div>
+            <div class="solution-notes">রেফ্রিজারেটরের কার্যসম্পাদন সহগ, \( K = \frac{Q_2}{Q_1 - Q_2} = \frac{450}{600 - 450} = \mathbf{3} \)।</div>
+          </div>
+
+          <!-- Q22 -->
+          <div class="mcq-card" id="qCard-22">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২২.</span> এনট্রপির মাত্রা কোনটি?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q22" value="A"> \( [ML^2T^3\theta^{-1}] \)</label>
+              <label class="option-label"><input type="radio" name="q22" value="B"> \( [MLT^{-2}\theta^{-1}] \)</label>
+              <label class="option-label"><input type="radio" name="q22" value="C"> \( [ML^2T^{-2}\theta^{-1}] \)</label>
+              <label class="option-label"><input type="radio" name="q22" value="D"> \( [ML^2T^2\theta^{-2}] \)</label>
+            </div>
+            <div class="solution-notes">\( dS = \frac{dQ}{T} = \mathbf{[ML^2T^{-2}\theta^{-1}]} \)।</div>
+          </div>
+
+          <!-- Q23 -->
+          <div class="mcq-card" id="qCard-23">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২৩.</span> নিচের বিবৃতিগুলো লক্ষ্য কর:<br/>i. যে তাপমাত্রায় কোনো পদার্থ কঠিন, তরল ও বায়বীয়রূপে সাম্যাবস্থায় থাকে তাকে ঐ পদার্থের ত্রৈধ বিন্দু বলে।<br/>ii. যে পরিবর্তনের কারণে তাপগতীয় স্থানাংকের মানের পরিবর্তন হয়, সেই পরিবর্তনকে তাপগতির প্রক্রিয়া বলে।<br/>iii. কোনো সিস্টেমের শক্তি রূপান্তরের অক্ষমতা বা অসম্ভাব্যতাকে বা রূপান্তরের জন্য শক্তির অপ্রাপ্যতাকে এন্ট্রপি বলে।<br/>নিচের কোনটি সঠিক?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q23" value="A"> i ও ii</label>
+              <label class="option-label"><input type="radio" name="q23" value="B"> i ও iii</label>
+              <label class="option-label"><input type="radio" name="q23" value="C"> ii ও iii</label>
+              <label class="option-label"><input type="radio" name="q23" value="D"> i, ii ও iii</label>
+            </div>
+            <div class="solution-notes">উপরের <span class="highlight">তিনটি বিবৃতিই সঠিক</span>।</div>
+          </div>
+
+          <!-- Q24 -->
+          <div class="mcq-card" id="qCard-24">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২৪.</span> \( 0.01\text{ kg} \) পানিকে \( 0^{\circ}\text{C} \) থেকে \( 10^{\circ}\text{C} \) এ উত্তপ্ত করা হলো। এন্ট্রপি পরিবর্তন হলো—</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q24" value="A"> \( 3.5\text{ JK}^{-1} \)</label>
+              <label class="option-label"><input type="radio" name="q24" value="B"> \( 4.5\text{ JK}^{-1} \)</label>
+              <label class="option-label"><input type="radio" name="q24" value="C"> \( 2.5\text{ JK}^{-1} \)</label>
+              <label class="option-label"><input type="radio" name="q24" value="D"> \( 1.5\text{ JK}^{-1} \)</label>
+            </div>
+            <div class="solution-notes">\( dS = ms\ln\frac{T_2}{T_1} = 0.01 \times 4200 \times \ln\frac{283}{273} = \mathbf{1.5\text{ JK}^{-1}} \)।</div>
+          </div>
+
+          <!-- Q25 -->
+          <div class="mcq-card" id="qCard-25">
+            <div class="question-header-row">
+              <div class="question-title"><span class="q-serial-num">২৫.</span> একটি তাপ ইঞ্জিন গৃহীত তাপের এক-চতুর্থাংশ বর্জন করলে এর দক্ষতা কত?</div>
+              <span class="omr-status-badge">🔒 OMR লকড</span>
+            </div>
+            <div class="options-grid">
+              <label class="option-label"><input type="radio" name="q25" value="A"> \( 25\% \)</label>
+              <label class="option-label"><input type="radio" name="q25" value="B"> \( 33.3\% \)</label>
+              <label class="option-label"><input type="radio" name="q25" value="C"> \( 66.6\% \)</label>
+              <label class="option-label"><input type="radio" name="q25" value="D"> \( 75\% \)</label>
+            </div>
+            <div class="solution-notes">\( \eta = \frac{W}{Q} \times 100\% = \left(1 - \frac{1}{4}\right) \times 100\% = \frac{3}{4} \times 100\% = \mathbf{75\%} \)।</div>
+          </div>
+
+        </form>
+      </div>
+
+      <div style="padding: 20px; text-align: center;">
+        <button type="button" class="btn btn-primary" style="max-width: 300px; font-size: 1.1rem; padding: 14px;" onclick="submitExam()">পরীক্ষা জমা দিন</button>
+      </div>
+    </div>
+
+    <!-- ৩. ফলাফল ও রিভিউ স্ক্রিন -->
+    <div id="resultArea" class="screen-section" style="display: none;">
+      <div class="result-summary">
+        <h3 style="color: var(--text-main); margin-bottom: 5px;">পরীক্ষা সম্পন্ন হয়েছে!</h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">আপনার প্রাপ্ত নম্বর:</p>
+        <div class="score-badge"><span id="scoreDisplayVal">০</span> <span style="font-size: 1.2rem; color: var(--text-muted);">/ ২৫</span></div>
+        
+        <div class="result-meta">
+          <div>🏆 আপনার অবস্থান: <span id="userRankVal" style="color: var(--primary-color);">-</span></div>
+          <div>⏱️ সময় লেগেছে: <span id="userTimeTakenVal" style="color: var(--primary-color);">-</span></div>
+        </div>
+        
+        <button id="retakeBtn" class="btn btn-primary" style="display:none; margin-top: 20px; width: auto;" onclick="retakePracticeExam()">আবার প্র্যাকটিস করুন 🔄</button>
+      </div>
+
+      <div class="nav-tabs">
+        <button id="tabLbBtn" class="tab-btn active" onclick="switchTab('leaderboard')">🏆 লিডারবোর্ড</button>
+        <button id="tabReviewBtn" class="tab-btn" onclick="switchTab('review')">📝 উত্তর পর্যালোচনা</button>
+      </div>
+
+      <div id="leaderboardTabContent">
+        <div class="lb-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 75px; text-align: center;">র‍্যাংক</th>
+                <th>নাম</th>
+                <th>কলেজ</th>
+                <th style="text-align: center;">নম্বর</th>
+                <th style="text-align: center;">ব্যয়কৃত সময়</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="reviewTabContent" style="display: none; padding-bottom: 30px;">
+      </div>
+    </div>
+
+    <div class="footer-notice">
+      <span class="golden-text">Developed by Rimit</span> <br>
+      <span class="golden-text">Exam Question: Made by Rimit</span>
+    </div>
+  </div>
+
+</body>
+</html>
